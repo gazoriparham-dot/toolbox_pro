@@ -115,6 +115,11 @@ Build custom tools by defining shell commands with variables and execution steps
 
 ## 🚀 Installation & Setup
 
+### ⚡ Quick Install (single command)
+
+    git clone https://github.com/gazoriparham-dot/toolbox_pro.git && cd toolbox_pro && bash install.sh
+
+
 ### 1. Clone the Repository
 
     git clone https://github.com/gazoriparham-dot/toolbox_pro.git
