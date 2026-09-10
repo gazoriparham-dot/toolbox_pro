@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import re
 import string
 from webbrain import WebBrain  # auto-added
 from aibrain import AIBrain  # auto-added v4
@@ -4586,7 +4587,8 @@ class ToolboxApp:
     def _hi_detect(self, h):
         res = []
         if re.fullmatch(r"[a-fA-F0-9]{32}", h):
-            res.append(("MD5 / NTLM", 0, "raw-md5"))
+            res.append(("MD5", 0, "raw-md5"))
+            res.append(("NTLM", 1000, "nt"))
         if re.fullmatch(r"[a-fA-F0-9]{16}", h):
             res.append(("MySQL323", 300, None))
         if re.fullmatch(r"[a-fA-F0-9]{40}", h):
@@ -4648,21 +4650,35 @@ class ToolboxApp:
         W("  " + T("", "Length") + ": %d" % len(h))
         dets = self._hi_detect(h)
         if not dets:
-            W(" ❌ " + T(" - ", "No known pattern"))
+            W(" ❌  " + T(" - ", "No known pattern"))
             self._hi_busy = False
             return
         for name, mode, jf in dets:
             extra = (", john: " + jf) if jf else ""
             W("  • %s   (hashcat -m %d%s)" % (name, mode, extra))
-        name, mode, jf = dets[0]
         cracked = None
-        if mode in (0, 100, 1400, 1700, 1000):
-            W("\n ⚡ " + T(" : ()...", "Stage 1: common passwords (instant)..."))
-            cracked = self._hi_python(h, mode, self._hi_small_words(), 100000)
+        used = None
+
+        def _py(m):
+            return m in (0, 100, 1400, 1700, 1000)
+
+        for name, mode, jf in dets:
+            if cracked is not None or self.hi_stop.is_set():
+                break
+            if _py(mode):
+                W("\n ⚡  " + T(" : ()...", "Stage 1: common passwords (instant)...") + "  [" + name + "]")
+                cracked = self._hi_python(h, mode, self._hi_small_words(), 100000)
+                if cracked is not None:
+                    used = (name, mode)
         if cracked is None and not self.hi_stop.is_set():
             wl = self._hi_wordlist()
             if wl.endswith(".gz"):
-                dec = "/tmp/tb_wl.txt"
+                cdir = os.path.expanduser("~/.cache/toolbox_pro")
+                try:
+                    os.makedirs(cdir, 0o700, exist_ok=True)
+                except Exception:
+                    cdir = os.path.expanduser("~")
+                dec = os.path.join(cdir, "rockyou.txt")
                 if not os.path.exists(dec):
                     W(" 📦 " + T(" rockyou ( ~ )...", "Decompressing rockyou (once ~20s)..."))
                     import gzip
@@ -4671,29 +4687,46 @@ class ToolboxApp:
                             fo.write(line)
                 wl = dec
             W("  📖 " + T(" :", "Wordlist:") + " " + wl)
-            if shutil.which("hashcat"):
-                cracked = self._hi_hashcat(h, mode, wl)
-            elif shutil.which("john") and jf:
-                cracked = self._hi_john(h, jf, wl)
-            if cracked is None and not self.hi_stop.is_set() and mode in (0, 100, 1400, 1700, 1000):
-                W("  ⚙ " + T("  (  )...", "Built-in engine (up to 300k)..."))
-                cracked = self._hi_python(h, mode, wl, 300000)
+            for name, mode, jf in dets:
+                if cracked is not None or self.hi_stop.is_set():
+                    break
+                W("\n  ── " + T(" :", "Trying:") + " %s (hashcat -m %d) ──" % (name, mode))
+                if shutil.which("hashcat"):
+                    cracked = self._hi_hashcat(h, mode, wl)
+                elif shutil.which("john") and jf:
+                    cracked = self._hi_john(h, jf, wl)
+                if cracked is not None:
+                    used = (name, mode)
+                    break
+                if _py(mode) and not self.hi_stop.is_set():
+                    W("  ⚙ " + T("  (  )...", "Built-in engine (up to 300k)..."))
+                    cracked = self._hi_python(h, mode, wl, 300000)
+                    if cracked is not None:
+                        used = (name, mode)
         if self.hi_stop.is_set():
             W("\n  ⏹ " + T(" ", "Stopped"))
         elif cracked is not None:
             W("\n  🎉 " + T(" !  :", "Cracked! Plaintext:") + " " + cracked)
+            if used:
+                W("  🔑 Method: %s (hashcat -m %d)" % used)
         else:
             W("\n ⚠ " + T(" ", "Not cracked; try a bigger wordlist"))
         W("  ⏱ " + T(" :", "Total time:") + " %.1fs" % (time.time() - t0))
         self._hi_busy = False
-
     def _hi_small_words(self):
-        p = "/tmp/tb_small.txt"
-        if not os.path.exists(p):
-            with open(p, "w") as f:
-                f.write("123456\npassword\n12345678\nqwerty\n123456789\n12345\n1234\n111111\n1234567\ndragon\n123123\nbaseball\nabc123\nfootball\nmonkey\nletmein\nshadow\nmaster\n696969\nmichael\nlogin\nadmin\nwelcome\npassword1\nadmin123\nroot\ntoor\nsecret\n1234567890\n")
+        cdir = os.path.expanduser("~/.cache/toolbox_pro")
+        try:
+            os.makedirs(cdir, 0o700, exist_ok=True)
+        except Exception:
+            cdir = os.path.expanduser("~")
+        p = os.path.join(cdir, "small_words.txt")
+        with open(p, "w") as f:
+            f.write("123456\npassword\n12345678\nqwerty\n123456789\n12345\n1234\n111111\n1234567\ndragon\n123123\nbaseball\nabc123\nfootball\nmonkey\nletmein\nshadow\nmaster\n696969\nmichael\nlogin\nadmin\nwelcome\npassword1\nadmin123\nroot\ntoor\nsecret\n1234567890\n")
+        try:
+            os.chmod(p, 0o600)
+        except Exception:
+            pass
         return p
-
     def _hi_hb(self, proc, t0):
         import time
         while proc.poll() is None:
@@ -4772,10 +4805,25 @@ class ToolboxApp:
                 if mode == 1700:
                     return hashlib.sha512(b).hexdigest()
                 if mode == 1000:
-                    return hashlib.new("md4", b).hexdigest()
+                    return hashlib.new("md4", w.encode("utf-16-le"), **_md4kw).hexdigest()
             except Exception:
                 return None
             return None
+        _md4kw = {}
+        if mode == 1000:
+            _md4kw = None
+            for _kw in ({}, {"usedforsecurity": False}):
+                try:
+                    hashlib.new("md4", b"", **_kw)
+                    _md4kw = dict(_kw)
+                    break
+                except (ValueError, TypeError):
+                    continue
+            if _md4kw is None:
+                W("  \u26a0 MD4 (NTLM) is not supported by this system's OpenSSL.")
+                W("  \u26a0 Python cracker cannot test mode 1000 here.")
+                W("  \u26a0 Use hashcat (-m 1000) for NTLM on this machine instead.")
+                return None
         f = self._hi_words_iter(wl)
         n = 0
         t0 = time.time()
