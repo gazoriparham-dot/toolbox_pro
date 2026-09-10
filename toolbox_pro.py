@@ -87,14 +87,6 @@ def get_subnet_info():
     m3 = re.search(r"default\s+via\s+([\d.]+)", route)
     return (m.group(1) if m else None, m2.group(1) if m2 else None, m3.group(1) if m3 else None)
 
-def fa(text):
-    try: return str(text)
-    except: return ""
-
-def fa_t(text):
-    try: return str(text)
-    except: return ""
-
 def _digits_en(s):
     fa_d = "\u06f0\u06f1\u06f2\u06f3\u06f4\u06f5\u06f6\u06f7\u06f8\u06f9"
     ar_d = "\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669"
@@ -620,62 +612,6 @@ GB_PLANS = [
  (r"(hash|\u0647\u0634).{0,30}(workflow|pipeline|process|full)|(workflow|pipeline).{0,20}(hash|crack)", ["hashid","wordlist","bruteforce"], "Hash cracking workflow")]
 
 
-GB_GUIDE_TEXT = """
-🤖 TOOLBOX AI - COMPLETE GUIDE
-
-WHAT IT IS
-  The web-enabled assistant built into Toolbox Pro. It knows every tool in
-  this app: what it does, where to find it, how to run it step by step,
-  what it needs installed, and the legal limits.
-  All guide texts here are English only.
-
-HOW TO ASK
-  Type a question in the box and press Send (or Enter). Examples:
-    which tool scans ports?
-    how do i test my own wifi?
-    how do i build a wordlist?
-  Every answer includes: tool name, dashboard path, numbered steps,
-  requirements, risk level and a LEGAL warning when needed.
-  Buttons under each answer:
-    [Open <tool>]   jump straight to that tool page
-    [Next step]     wizard mode - shows the steps one at a time
-    grey chips      suggested follow-up questions
-
-COMMANDS
-  /help            this command list
-  /tools           every tool with a one-line description
-  /cats            tools grouped by category
-  /risk            tools grouped by risk level
-  /find <task>     best tools for a task, with match percentage
-  /plan <goal>     multi-tool workflow plan
-  compare A vs B   side-by-side comparison of two tools + VERDICT
-  compare all      one-line table of every tool
-  /why             reasoning behind the last answer
-  /next            wizard: next step of the last how-to
-  /teach q | a     teach a custom question + answer (saved forever)
-  /good /bad       rate the last answer (ranking learns from it)
-  /hist            your last 10 questions and suggested tool
-  /clear           wipe the chat window
-
-SAFETY ROUTER (dangerous requests)
-  Risky questions are first checked against the toolbox itself:
-    tool EXISTS here   ->  "YES - Toolbox Pro HAS this capability"
-                           + full step-by-step guide + LEGAL warning
-    tool NOT here      ->  red "NOT in Toolbox Pro", no guidance given
-  DDoS, malware, ransomware, phishing, carding and weapons are always
-  refused - they are not part of this toolbox.
-
-MEMORY (saved in your home folder)
-  ~/.toolbox_ai_custom.json    your /teach question+answer pairs
-  ~/.toolbox_ai_weights.json   ranking learned from /good and /bad
-
-TIPS
-  - Misspellings are OK: "namp" still finds Nmap.
-  - Not sure? Type /tools or compare all.
-"""
-
-TOOL_HELP["guidebot"] = {"en": GB_GUIDE_TEXT}
-TOOL_HELP["guidebot"] = {"en": GB_GUIDE_TEXT}  # final: English guide wins
 
 GB_GUIDE_TEXT_FULL = """
 TOOLBOX AI - COMPLETE TOOL GUIDE (v5.3)
@@ -1249,6 +1185,7 @@ class ToolboxApp:
         return str(txt)
 
     def _wl_T(self, fa_t, en_t):
+        """i18n hook: UI is English-only today; keeps call sites locale-ready."""
         return en_t
 
 
@@ -1257,19 +1194,9 @@ class ToolboxApp:
             p.pack_forget()
         if name in self.pages:
             self.pages[name].pack(fill="both", expand=True)
-        try:
-            pg = self.pages[name]
-            lang = getattr(self, "lang", "en")
-            if False:
-                self._ig_extra_dict()
-                self._translate_ui(pg)
-                self._raw_fix_pass(pg)
-                self._align_walk(pg, lang)
-        except Exception:
-            pass
     def _write(self, txt, text, clear=False):
         try:
-            text = fa_t(text)
+            text = str(text)
             txt.config(state="normal")
             if clear:
                 txt.delete("1.0", "end")
@@ -1286,7 +1213,7 @@ class ToolboxApp:
                 txt_widget.configure(state="normal")
                 if clear:
                     txt_widget.delete("1.0", "end")
-                t2 = fa_t(str(text))
+                t2 = str(text)
                 if tag:
                     txt_widget.insert("end", t2 + "\n", tag)
                 else:
@@ -1394,7 +1321,7 @@ class ToolboxApp:
                 return
             txt = e.get("en") or e.get("fa") or ""
             try:
-                txt = fa_t(txt)
+                txt = str(txt)
             except Exception:
                 pass
             w = tk.Toplevel(self.root)
@@ -1578,7 +1505,7 @@ class ToolboxApp:
         tr2 = tk.Frame(f_ap, bg=TH["bg2"])
         tr2.pack(fill="x", pady=3)
         tk.Label(tr2, text="Theme:", bg=TH["bg2"], fg=TH["text"]).pack(side="left")
-        self._theme_names = {k: fa(THEME_EN[k]) for k in THEMES}
+        self._theme_names = {k: str(THEME_EN[k]) for k in THEMES}
         cur = self.prefs.get("theme", "dark")
         self.set_theme = tk.StringVar(value=self._theme_names.get(cur, self._theme_names["dark"]))
         om = tk.OptionMenu(tr2, self.set_theme, *list(self._theme_names.values()))
@@ -4618,11 +4545,7 @@ class ToolboxApp:
         for c in cands:
             if os.path.exists(c):
                 return c
-        p = "/tmp/tb_words.txt"
-        if not os.path.exists(p):
-            with open(p, "w") as f:
-                f.write("123456\npassword\n12345678\nqwerty\n123456789\n12345\n1234\n111111\n1234567\ndragon\n123123\nbaseball\nabc123\nfootball\nmonkey\nletmein\nshadow\nmaster\n696969\nmichael\nlogin\nadmin\nwelcome\npassword1\nadmin123\nroot\ntoor\nsecret\n1234567890\n")
-        return p
+        return self._hi_small_words()
 
     def _hi_words_iter(self, path):
         import gzip
@@ -4770,9 +4693,11 @@ class ToolboxApp:
     def _hi_john(self, h, jf, wl):
         import time
         W = lambda s, clear=False: self._write_async(self.hi_out, s, clear=clear)
-        hf = "/tmp/tb_hash_j.txt"
-        with open(hf, "w") as f:
+        import tempfile as _tf
+        _fd7, hf = _tf.mkstemp(prefix="tb_hash_j_", suffix=".txt")
+        with os.fdopen(_fd7, "w") as f:
             f.write(h + "\n")
+        os.chmod(hf, 0o600)
         cmd = ["john", "--format=" + jf, "--wordlist=" + wl, hf]
         W("  💻 john --format=%s ..." % jf)
         try:
