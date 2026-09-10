@@ -2029,7 +2029,10 @@ class ToolboxApp:
         runner = AsyncCommandRunner.get("packx")
         if runner.running:
             runner.stop()
-            time.sleep(0.3)
+            for _ in range(20):
+                if not runner.running:
+                    break
+                time.sleep(0.1)
         toks = names.split()
         pm, inst, srch = self._pk_pm()
         T = self._wl_T
@@ -2088,8 +2091,10 @@ class ToolboxApp:
                 self._write_async(self.pk_out, "  ⚠ " + T("      : ", "Not installed; maybe wrong name: ") + ", ".join(still))
             else:
                 self._write_async(self.pk_out, "  ✅ " + T("    .", "Installed successfully."))
+        if not runner.run(inst + missing, _on_line, timeout=300):
+            self._write_async(self.pk_out, "  ⚠ " + T("   ...", "Another install is still running; try again in a moment."))
+            return
         threading.Thread(target=_finish, args=(missing,), daemon=True).start()
-        runner.run(inst + missing, _on_line, timeout=300)
 
     def _sysmon_refresh(self):
         lines = []
@@ -2142,7 +2147,7 @@ class ToolboxApp:
                 pass
             for _e in _lines_extra:
                 lines.append(_e)
-            self._write(self.sm_out, "\n".join(lines), True)
+            self._write_async(self.sm_out, "\n".join(lines), clear=True)
 
     def _ct_file(self):
         return os.path.expanduser("~/.toolbox_custom_tools.json")
@@ -2342,7 +2347,7 @@ class ToolboxApp:
         preview = "\n".join("  " + w for w in out[:100])
         msg = "\n  Generated: %d words%s\n\n%s\n" % (
             len(out), " (limit reached)" if done else "", preview)
-        self._write(self.wl_out, msg, True)
+        self._write_async(self.wl_out, msg, clear=True)
 
     def _wl_save(self):
         lst = getattr(self, "wl_list", None)
@@ -2438,7 +2443,7 @@ class ToolboxApp:
             except Exception:
                 pass
 
-        self._write(out, "\n🖧 " + self._wl_T("  ", "Unified host scan"), True)
+        self._write_async(out, "\n🖧 " + self._wl_T("  ", "Unified host scan"), clear=True)
 
         # ── 1) ARP table ──
         self._write_async(out, "⏳ [1/3] " + self._wl_T("   ARP table...", "Reading ARP table..."))
@@ -3227,7 +3232,7 @@ class ToolboxApp:
                 try:
                     rr = subprocess.run(["ping", "-c", "1", "-W", "2", dom],
                                         capture_output=True, text=True, timeout=8)
-                    mm = re.search(r"$\d+\.\d+\.\d+\.\d+$", rr.stdout)
+                    mm = re.search(r"\((\d+\.\d+\.\d+\.\d+)\)", rr.stdout)
                     if mm:
                         q = mm.group(1)
                 except Exception:
@@ -3837,7 +3842,7 @@ class ToolboxApp:
             L.append("  [OK] DNS: %s" % ip)
         except Exception:
             L.append("  [ERR] DNS fail")
-            self._write(self.wp_out, "\n".join(L), True)
+            self._write_async(self.wp_out, "\n".join(L), clear=True)
             return
         for port in [80, 443, 8080, 8443, 21, 22, 25, 3306]:
             s = socket.socket()
@@ -3869,7 +3874,7 @@ class ToolboxApp:
                 st = getattr(e, "code", None)
                 if st:
                     L.append("  [%d] %s" % (st, path))
-        self._write(self.wp_out, "\n".join(L), True)
+        self._write_async(self.wp_out, "\n".join(L), clear=True)
 
     def _build_bruteforce(self):
         page = tk.Frame(self.content, bg=TH["bg"])
@@ -4400,28 +4405,43 @@ class ToolboxApp:
             W("  🔁 DNS : " + socket.gethostbyaddr(ip)[0])
         except Exception:
             W("  🔁 DNS : ❌")
-        code, data = self._os_http("http://ip-api.com/json/%s?lang=en" % ip)
+        _geo_done = False
+        code, data = self._os_http("https://ipwho.is/%s" % ip)
         if code == 200:
             try:
-                d = json.loads(data.decode("utf-8", "replace"))
-                if d.get("status") == "success":
-                    W("  🗺 " + T(":", "Location:") + " %s %s %s" % (d.get("country"), d.get("regionName"), d.get("city")))
-                    W("  🏢 ISP: %s | %s" % (d.get("isp"), d.get("org")))
-                    W("  🛜 AS: %s" % d.get("as"))
-                    W("  🕐 %s | 📍 %s,%s" % (d.get("timezone"), d.get("lat"), d.get("lon")))
+                d0 = json.loads(data.decode("utf-8", "replace"))
+                if d0.get("success") is not False and d0.get("country"):
+                    _c0 = d0.get("connection") or {}
+                    W("  🗺 " + T(":", "Location:") + " %s %s %s" % (d0.get("country"), d0.get("region"), d0.get("city")))
+                    W("  🏢 ISP: %s | %s" % (_c0.get("isp"), _c0.get("org")))
+                    W("  🛜 AS: %s" % _c0.get("asn"))
+                    W("  🕐 %s | 📍 %s,%s" % (d0.get("timezone"), d0.get("latitude"), d0.get("longitude")))
+                    _geo_done = True
             except Exception:
                 pass
-        else:
-            code2, data2 = self._os_http("https://ipapi.co/%s/json/" % ip, timeout=10)
-            if code2 == 200:
+        if not _geo_done:
+            code, data = self._os_http("http://ip-api.com/json/%s?lang=en" % ip)
+            if code == 200:
                 try:
-                    d = json.loads(data2.decode("utf-8", "replace"))
-                    W("  🗺 " + T(":", "Location:") + " %s %s" % (d.get("country_name"), d.get("city")))
-                    W("  🏢 Org: %s | %s" % (d.get("org", "?"), d.get("asn", "?")))
+                    d = json.loads(data.decode("utf-8", "replace"))
+                    if d.get("status") == "success":
+                        W("  🗺 " + T(":", "Location:") + " %s %s %s" % (d.get("country"), d.get("regionName"), d.get("city")))
+                        W("  🏢 ISP: %s | %s" % (d.get("isp"), d.get("org")))
+                        W("  🛜 AS: %s" % d.get("as"))
+                        W("  🕐 %s | 📍 %s,%s" % (d.get("timezone"), d.get("lat"), d.get("lon")))
                 except Exception:
                     pass
             else:
-                W("  ⚠ " + T("    ", "Geo service unavailable"))
+                code2, data2 = self._os_http("https://ipapi.co/%s/json/" % ip, timeout=10)
+                if code2 == 200:
+                    try:
+                        d = json.loads(data2.decode("utf-8", "replace"))
+                        W("  🗺 " + T(":", "Location:") + " %s %s" % (d.get("country_name"), d.get("city")))
+                        W("  🏢 Org: %s | %s" % (d.get("org", "?"), d.get("asn", "?")))
+                    except Exception:
+                        pass
+                else:
+                    W("  ⚠ " + T("    ", "Geo service unavailable"))
         W("  🏛 " + T("  (RDAP):", "Network ownership (RDAP):"))
         code, data = self._os_http("https://rdap.org/ip/%s" % ip, timeout=12)
         if code == 200:
@@ -4937,17 +4957,20 @@ class ToolboxApp:
         except Exception:
             pass
         st = {"ok": 0, "all": 0}
+        _lk = threading.Lock()
         def check(w):
             if self.sf_stop.is_set():
                 return
             host = "%s.%s" % (w, dom)
             try:
                 ip = socket.gethostbyname(host)
-                st["ok"] += 1
+                with _lk:
+                    st["ok"] += 1
                 self._write_async(self.sf_out, "  ✅ %-28s -> %s" % (host, ip))
             except Exception:
                 pass
-            st["all"] += 1
+            with _lk:
+                st["all"] += 1
         with ThreadPoolExecutor(max_workers=8) as ex:
             for w in words:
                 if self.sf_stop.is_set():
