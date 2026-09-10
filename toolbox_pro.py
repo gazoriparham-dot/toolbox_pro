@@ -3227,13 +3227,14 @@ class ToolboxApp:
                 try:
                     rr = subprocess.run(["ping", "-c", "1", "-W", "2", dom],
                                         capture_output=True, text=True, timeout=8)
-                    mm = re.search(r"\(\d+\.\d+\.\d+\.\d+\)", rr.stdout)
+                    mm = re.search(r"$\d+\.\d+\.\d+\.\d+$", rr.stdout)
                     if mm:
                         q = mm.group(1)
                 except Exception:
                     pass
         import ipaddress
         import urllib.request
+        import urllib.error
         self.root.after(0, lambda: self._write(self.ig_out, "  🔎 " + self._ig_lb(": ", "Searching: ") + q, True))
         target = q
         if not re.match(r'^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$', q):
@@ -3250,50 +3251,126 @@ class ToolboxApp:
             self.root.after(0, lambda: self._write(self.ig_out, self._ig_lb(" ", "Invalid IP")))
             return
         if ipobj.is_private:
-            result = self._ig_local_phone(target)
-            self._ig_auto_open = False  # private
-            self.root.after(0, lambda: self._write(self.ig_out, result))
-            return
-        try:
-            url = "http://ip-api.com/json/%s?fields=status,message,country,countryCode,regionName,city,zip,lat,lon,timezone,isp,org,as,query" % target
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            data = json.loads(urllib.request.urlopen(req, timeout=15).read().decode())
-            if data.get("status") != "success":
-                msg = data.get("message", "?")
-                self.root.after(0, lambda: self._write(self.ig_out, "  ⚠ " + self._ig_lb(" API: ", "API error: ") + msg))
-                return
-            lat = data.get("lat", "?")
-            lon = data.get("lon", "?")
-            maplink = ("https://www.google.com/maps?q=%s,%s" % (lat, lon))
-            self._ig_maplink = maplink
-            if getattr(self, "_ig_auto_open", False):
-                self._ig_auto_open = False
+            fn = getattr(self, "_ig_local_phone", None)
+            result = None
+            if fn:
                 try:
-                    import webbrowser
-                    self.root.after(0, lambda ml=maplink: webbrowser.open(ml))
+                    result = fn(target)
                 except Exception:
-                    pass
-            L = ["", "  🌍 " + self._ig_lb(":", "Result:"), "",
-            " 🌐 " + self._ig_lb(": ", "IP: ") + str(data.get("query", "?")),
-                 "  🏳 " + self._ig_lb(": ", "Country: ") + ("%s (%s)" % (data.get("country", "?"), data.get("countryCode", "?"))),
-                 "  🏙 " + self._ig_lb(": ", "City: ") + str(data.get("city", "?")),
-                 "  🗺 " + self._ig_lb(": ", "Region: ") + str(data.get("regionName", "?")),
-                 "  📮 " + self._ig_lb(" : ", "Zip: ") + str(data.get("zip", "?")),
-                 "  📍 " + self._ig_lb("  (): ", "Latitude: ") + str(lat),
-                 "  📍 " + self._ig_lb("  (): ", "Longitude: ") + str(lon),
-                 "  🕐 " + self._ig_lb(" : ", "Timezone: ") + str(data.get("timezone", "?")),
-                 "  🏢 " + self._ig_lb(": ", "Org: ") + str(data.get("org", "?")),
-                 "  📡 " + self._ig_lb("ISP: ", "ISP: ") + str(data.get("isp", "?")),
-                 "  🧩 AS: " + str(data.get("as", "?")),
-                 "",
-                 "  🔗 " + self._ig_lb(" :", "Map link:"),
-                 "     " + maplink, ""]
-            txt = "\n".join(L)
-            self.root.after(0, lambda: self._write(self.ig_out, txt))
-        except Exception as e:
-            err = str(e)
-            self.root.after(0, lambda: self._write(self.ig_out, "  ⚠ " + self._ig_lb(": ", "Error: ") + err))
+                    result = None
+            if not result:
+                result = self._ig_local_basic(target)
+            head = "  🏠 " + self._ig_lb(" : ", "Private/local IP - no geo data exists; local analysis:")
+            self._ig_auto_open = False
+            self.root.after(0, lambda: self._write(self.ig_out, head + "\n" + result))
+            return
 
+        def _fetch(url, timeout=10):
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) ToolboxPro/1.0"})
+            return json.loads(urllib.request.urlopen(req, timeout=timeout).read().decode())
+
+        def _parse(pname, raw):
+            if pname == "ipwho.is":
+                if raw.get("success") is not False:
+                    conn = raw.get("connection") or {}
+                    return {"ip": raw.get("ip", target), "country": raw.get("country"), "cc": raw.get("country_code"),
+                            "region": raw.get("region"), "city": raw.get("city"), "zip": raw.get("postal"),
+                            "lat": raw.get("latitude"), "lon": raw.get("longitude"), "tz": raw.get("timezone"),
+                            "isp": conn.get("isp"), "org": conn.get("org"), "as": conn.get("asn")}
+            elif pname == "geojs.io":
+                if raw.get("country"):
+                    return {"ip": raw.get("ip", target), "country": raw.get("country"), "cc": raw.get("country_code"),
+                            "region": raw.get("region"), "city": raw.get("city"), "zip": raw.get("postal"),
+                            "lat": raw.get("latitude"), "lon": raw.get("longitude"), "tz": raw.get("timezone"),
+                            "isp": raw.get("organization"), "org": raw.get("organization"), "as": raw.get("asn")}
+            elif pname == "ipapi.co":
+                if raw.get("country_name") or raw.get("city"):
+                    return {"ip": raw.get("ip", target), "country": raw.get("country_name"), "cc": raw.get("country_code"),
+                            "region": raw.get("region"), "city": raw.get("city"), "zip": raw.get("postal"),
+                            "lat": raw.get("latitude"), "lon": raw.get("longitude"), "tz": raw.get("timezone"),
+                            "isp": raw.get("org"), "org": raw.get("org"), "as": raw.get("asn")}
+            elif pname == "ip-api.com":
+                if raw.get("status") == "success":
+                    return {"ip": raw.get("query"), "country": raw.get("country"), "cc": raw.get("countryCode"),
+                            "region": raw.get("regionName"), "city": raw.get("city"), "zip": raw.get("zip"),
+                            "lat": raw.get("lat"), "lon": raw.get("lon"), "tz": raw.get("timezone"),
+                            "isp": raw.get("isp"), "org": raw.get("org"), "as": raw.get("as")}
+            return None
+
+        provs = [
+            ("ipwho.is", "https://ipwho.is/%s" % target, 10),
+            ("geojs.io", "https://get.geojs.io/v1/ip/geo/%s.json" % target, 10),
+            ("ipapi.co", "https://ipapi.co/%s/json/" % target, 10),
+            ("ip-api.com", "http://ip-api.com/json/%s?fields=status,message,country,countryCode,regionName,city,zip,lat,lon,timezone,isp,org,as,query" % target, 6),
+        ]
+        data = None
+        errs = []
+        for pname, purl, ptm in provs:
+            try:
+                d = _parse(pname, _fetch(purl, ptm))
+                if d:
+                    data = d
+                    data["src"] = pname
+                    break
+                errs.append("%s: incomplete answer" % pname)
+            except urllib.error.HTTPError as e:
+                extra = " (rate limit)" if e.code == 429 else ""
+                errs.append("%s: HTTP %s%s" % (pname, e.code, extra))
+            except Exception as e:
+                errs.append("%s: %s" % (pname, str(e)[:50]))
+        if data is None:
+            msg = ("  ⚠ " + self._ig_lb(" : ", "All geo providers failed:") + "\n" +
+                   "\n".join("     - " + x for x in errs) + "\n" +
+                   "  💡 " + self._ig_lb(" / ", "Check internet/VPN, then retry"))
+            self.root.after(0, lambda: self._write(self.ig_out, msg))
+            return
+        lat = data.get("lat", "?")
+        lon = data.get("lon", "?")
+        maplink = ("https://www.google.com/maps?q=%s,%s" % (lat, lon))
+        self._ig_maplink = maplink
+        if getattr(self, "_ig_auto_open", False):
+            self._ig_auto_open = False
+            try:
+                import webbrowser
+                self.root.after(0, lambda ml=maplink: webbrowser.open(ml))
+            except Exception:
+                pass
+        L = ["", "  🌍 " + self._ig_lb(":", "Result:") + "  (source: %s)" % data.get("src", "?"), "",
+             "  🌐 " + self._ig_lb(": ", "IP: ") + str(data.get("ip", "?")),
+             "  🏳 " + self._ig_lb(": ", "Country: ") + ("%s (%s)" % (data.get("country", "?"), data.get("cc", "?"))),
+             "  🏙 " + self._ig_lb(": ", "City: ") + str(data.get("city", "?")),
+             "  🗺 " + self._ig_lb(": ", "Region: ") + str(data.get("region", "?")),
+             "  📮 " + self._ig_lb(": ", "Zip: ") + str(data.get("zip", "?")),
+             "  📍 " + self._ig_lb(": ", "Latitude: ") + str(lat),
+             "  📍 " + self._ig_lb(": ", "Longitude: ") + str(lon),
+             "  🕐 " + self._ig_lb(": ", "Timezone: ") + str(data.get("tz", "?")),
+             "  🏢 " + self._ig_lb(": ", "Org: ") + str(data.get("org", "?")),
+             "  📡 " + self._ig_lb(": ", "ISP: ") + str(data.get("isp", "?")),
+             "  🧩 AS: " + str(data.get("as", "?")),
+             "", "  🔗 " + self._ig_lb(" :", "Map link:"), "     " + maplink, ""]
+        txt = "\n".join(L)
+        self.root.after(0, lambda: self._write(self.ig_out, txt))
+
+    def _ig_local_basic(self, ip):
+        out = ["", "  🏠 Local network info for " + ip, ""]
+        try:
+            rr = subprocess.run(["ping", "-c", "2", "-W", "2", ip], capture_output=True, text=True, timeout=8)
+            m = re.search(r"time=([\d.]+)", rr.stdout)
+            out.append("  📶 Ping: " + (m.group(1) + " ms" if m else "no reply"))
+        except Exception:
+            out.append("  📶 Ping: error")
+        try:
+            nn = subprocess.run(["ip", "neigh", "show", ip], capture_output=True, text=True, timeout=6)
+            m = re.search(r"lladdr ([0-9a-fA-F:]+)", nn.stdout)
+            out.append("  🔧 MAC: " + (m.group(1) if m else "unknown"))
+        except Exception:
+            pass
+        try:
+            out.append("  🖥 Hostname: " + socket.gethostbyaddr(ip)[0])
+        except Exception:
+            out.append("  🖥 Hostname: unknown")
+        out.append("")
+        return "\n".join(out)
     def _build_packx(self):
         page = tk.Frame(self.content, bg=TH["bg"])
         self.pages["packx"] = page
