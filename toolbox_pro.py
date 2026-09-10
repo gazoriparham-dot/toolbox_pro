@@ -2057,11 +2057,12 @@ class ToolboxApp:
         except Exception:
             pass
         if not sudo_ok:
-            sh = "/tmp/tb_pk_install.sh"
+            import tempfile
+            _fd3, sh = tempfile.mkstemp(prefix="tb_pk_", suffix=".sh")
             try:
-                with open(sh, "w") as f:
+                with os.fdopen(_fd3, "w") as f:
                     f.write("#!/bin/bash\n" + " ".join(inst + missing) + "\necho\nread -p 'Press Enter to close...'\n")
-                os.chmod(sh, 0o755)
+                os.chmod(sh, 0o700)
             except Exception:
                 pass
             term = None
@@ -3042,6 +3043,12 @@ class ToolboxApp:
         self._ct_out_map[tid] = out
         self.show_page(name)
 
+    def _safe_unlink(self, p):
+        try:
+            os.unlink(p)
+        except Exception:
+            pass
+
     def _ct_run(self, tid=None):
         """Run a custom tool: executes saved steps sequentially with live output."""
         if tid is None:
@@ -3074,6 +3081,7 @@ class ToolboxApp:
 
         def _worker():
             import shlex
+            import tempfile
             try:
                 vars_d = t.get("vars", {}) or {}
                 self._write_async(out, "  \u25b6 Running: %s (%d steps)"
@@ -3091,14 +3099,20 @@ class ToolboxApp:
                         timeout = int(s.get("timeout", 120))
                     except Exception:
                         timeout = 120
+                    _shp = None
                     if sudo_pw and cmd.lstrip().startswith("sudo "):
-                        cmd = "echo %s | sudo -S %s" % (shlex.quote(sudo_pw),
-                                                        cmd.lstrip()[5:])
+                        _rest = cmd.lstrip()[5:]
+                        _fd2, _shp = tempfile.mkstemp(prefix="tb_ct_", suffix=".sh")
+                        with os.fdopen(_fd2, "w") as _f2:
+                            _f2.write("#!/bin/bash\necho %s | sudo -S %s\n" % (shlex.quote(sudo_pw), _rest))
+                        os.chmod(_shp, 0o700)
+                        threading.Timer(3.0, self._safe_unlink, args=(_shp,)).start()
+                        cmd = "sudo -S " + _rest
                     self._write_async(out, "\n  \u2500\u2500 [%d/%d] %s \u2500\u2500"
                                       % (i, len(steps), cmd))
                     p = None
                     try:
-                        p = subprocess.Popen(["bash", "-c", cmd],
+                        p = subprocess.Popen((["bash", _shp] if _shp else ["bash", "-c", cmd]),
                                              stdout=subprocess.PIPE,
                                              stderr=subprocess.STDOUT,
                                              text=True, bufsize=1,
@@ -4696,12 +4710,14 @@ class ToolboxApp:
     def _hi_hashcat(self, h, mode, wl):
         import time
         W = lambda s, clear=False: self._write_async(self.hi_out, s, clear=clear)
-        hf = "/tmp/tb_hash.txt"
-        pot = "/tmp/tb_pot.txt"
-        with open(hf, "w") as f:
+        import tempfile
+        _fd4, hf = tempfile.mkstemp(prefix="tb_hash_", suffix=".txt")
+        with os.fdopen(_fd4, "w") as f:
             f.write(h + "\n")
-        if os.path.exists(pot):
-            os.remove(pot)
+        os.chmod(hf, 0o600)
+        _fd5, pot = tempfile.mkstemp(prefix="tb_pot_", suffix=".txt")
+        os.close(_fd5)
+        os.unlink(pot)
         cmd = ["hashcat", "-m", str(mode), "-a", "0", hf, wl,
                "--potfile-path=" + pot, "--force", "--quiet"]
         W("  💻 hashcat -m %d ..." % mode)
@@ -5043,11 +5059,12 @@ class ToolboxApp:
                                             "Not installed - Start installs and runs"), fg=TH["red"])
 
     def _ag_term(self, body):
-        sh = "/tmp/ag_run.sh"
+        import tempfile
+        _fd6, sh = tempfile.mkstemp(prefix="tb_ag_", suffix=".sh")
         try:
-            with open(sh, "w") as f:
+            with os.fdopen(_fd6, "w") as f:
                 f.write("#!/bin/bash\n" + body + "\necho\nread -p 'Press Enter to close...'\n")
-            os.chmod(sh, 0o755)
+            os.chmod(sh, 0o700)
         except Exception:
             return None
         term = None
@@ -5985,6 +6002,8 @@ class ToolboxApp:
                       font=TH["font_s"]).pack(side="left", padx=2)
 
     def _gb_ask(self, q=None):
+        if getattr(self, "_gb_busy", False):
+            return
         if q is None:
             q = self.gb_in.get().strip()
             self.gb_in.delete(0, "end")
@@ -5993,7 +6012,84 @@ class ToolboxApp:
         self._gb_add("u", "You: " + q)
         self._gb_add("b", "")
         self._gb_actions([])
-        r = self._gb_engine().answer(q)
+        self._gb_busy = True
+        self._gb_think_start()
+
+        def _think():
+            try:
+                rr = self._gb_engine().answer(q)
+            except Exception as e:
+                rr = {"kind": "text", "text": "⚠ Answer engine error: %s" % e}
+            self._gb_schedule(rr)
+
+        threading.Thread(target=_think, daemon=True).start()
+
+    def _gb_think_start(self):
+        self._gb_think_stop = False
+        try:
+            w = self.gb_chat
+            w.configure(state="normal")
+            w.insert("end", "\n\U0001f4ad Thinking \u280b", "tbthink")
+            w.configure(state="disabled")
+            w.see("end")
+        except Exception:
+            return
+        self._gb_think_i = 0
+        self._gb_think_tick()
+
+    def _gb_think_tick(self):
+        if getattr(self, "_gb_think_stop", True):
+            return
+        try:
+            w = self.gb_chat
+            if not w.winfo_exists():
+                return
+            frames = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
+            self._gb_think_i = getattr(self, "_gb_think_i", 0) + 1
+            f = frames[self._gb_think_i % len(frames)]
+            rng = w.tag_ranges("tbthink")
+            if rng:
+                a = w.index(str(rng[0]) + "+1c")
+                b = str(rng[-1])
+                w.configure(state="normal")
+                w.delete(a, b)
+                w.insert(a, " \U0001f4ad Thinking " + f, "tbthink")
+                w.configure(state="disabled")
+                w.see("end")
+            else:
+                return
+        except Exception:
+            import traceback
+            traceback.print_exc()
+        if not getattr(self, "_gb_think_stop", True):
+            try:
+                self.gb_chat.after(120, self._gb_think_tick)
+            except Exception:
+                pass
+    def _gb_think_end(self):
+        self._gb_think_stop = True
+        try:
+            w = self.gb_chat
+            rng = w.tag_ranges("tbthink")
+            if rng:
+                w.configure(state="normal")
+                w.delete(rng[0], rng[-1])
+                w.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _gb_schedule(self, r):
+        o = getattr(self, "root", None)
+        if o is None or not hasattr(o, "after"):
+            o = self if hasattr(self, "after") else None
+        if o is None:
+            self._gb_render(r)
+            return
+        o.after(0, lambda: self._gb_render(r))
+
+    def _gb_render(self, r):
+        self._gb_think_end()
+        self._gb_busy = False
         k = r.get("kind")
         if k == "clear":
             self.gb_chat.configure(state="normal")
