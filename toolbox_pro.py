@@ -347,7 +347,7 @@ TOOL_HELP = {
   "packx": {
   "en": "Automatically installs packages by detecting the system package manager (apt/pacman/dnf/apk). Just enter a tool name and press Install."},
   "wifiattack": {
-  "en": "Full Wi-Fi audit flow: monitor mode, AP scan, client scan, targeted or broadcast deauth, stop. Only on your own network."},
+  "en": "Full Wi-Fi audit flow: monitor mode, AP scan, LIVE client scan (associated + probing devices, vendor & signal strength), targeted or broadcast deauth, stop. Only on your own network."},
   "webpentest": {
   "en": "Basic web security checks: headers, TLS, tech, common paths. Only on your own sites."},
   "bruteforce": {
@@ -382,7 +382,7 @@ GB_KB = [
  "al":["wifi password","monitor mode","handshake capture","my wifi password","hack my own wifi"],
  "qs":["how do i test my own wifi","which tool attacks wifi","how do i test my own wifi password","which tool can disconnect a wifi","how do i disconnect a wifi","which tool kicks clients off wifi"],
  "d":"Full Wi-Fi audit: monitor mode, AP scan, client scan, deauth test, stop.",
- "s":["Set interface (wlan0) and press Monitor ON (root + aircrack-ng needed)","Scan APs (15s) and pick your BSSID; channel fills automatically","Optional: Scan clients (20s), put a client MAC in CLIENT","Deauth test on YOUR network to force handshake traffic","Stop anytime; take the capture to Hash ID with a wordlist"],
+ "s":["Set interface (wlan0) and press Monitor ON (root + aircrack-ng needed)","Scan APs (LIVE) and pick your BSSID; channel fills automatically","Optional: Scan clients (LIVE; set Secs; shows associated + probing devices with vendor & signal); put a client MAC in CLIENT","Deauth test on YOUR network to force handshake traffic","Stop anytime; take the capture to Hash ID with a wordlist"],
  "r":"root/sudo, aircrack-ng, monitor-mode Wi-Fi adapter","rel":["airgeddon","wordlist","hashid"],"aw":1},
 {"id":"airgeddon","n":"Airgeddon","p":"airgeddon","cat":"Network","risk":"dangerous","icon":"\U0001f4e1",
  "k":["airgeddon","evil","twin","pmkid","wps"],
@@ -3443,7 +3443,7 @@ class ToolboxApp:
         tk.Button(f1, text=self._wl_T(" ", "Monitor OFF"),
                  command=lambda: self._wf_mon(False), bg=TH["card"], fg=TH["text"]).pack(side="left", padx=3)
         f2 = tk.Frame(page, bg=TH["bg"]); f2.pack(fill="x", padx=40, pady=4)
-        tk.Button(f2, text=self._wl_T(" AP (15s)", "Scan APs (15s)"),
+        tk.Button(f2, text=self._wl_T("  (LIVE)", "\U0001f4f6 Scan APs (LIVE)"),
                  command=self._wf_scan, bg=TH["accent"], fg="#000").pack(side="left", padx=3)
         tk.Label(f2, text="BSSID:", bg=TH["bg"], fg=TH["text"]).pack(side="left", padx=(10, 0))
         self.wf_bssid = tk.Entry(f2, bg=TH["card"], fg=TH["text"], width=14,
@@ -3463,8 +3463,17 @@ class ToolboxApp:
         tk.Button(f2, text=self._wl_T(" Deauth ( !)", "Deauth test (own network!)"),
                  command=self._wf_deauth, bg=TH["red"], fg="#fff").pack(side="left", padx=3)
         f3 = tk.Frame(page, bg=TH["bg"]); f3.pack(fill="x", padx=40, pady=4)
-        tk.Button(f3, text=self._wl_T(" (20s)", "Scan clients (20s)"),
+        tk.Button(f3, text=self._wl_T("  (LIVE)", "📡 Scan clients (LIVE)"),
                   command=self._wf_clients, bg=TH["accent"], fg="#000").pack(side="left", padx=3)
+        tk.Label(f3, text=self._wl_T(": ", "Secs:"), bg=TH["bg"], fg=TH["text"]).pack(side="left", padx=(8, 0))
+        self.wf_csecs = tk.Entry(f3, bg=TH["card"], fg=TH["text"], width=4,
+                                 insertbackground=TH["text"])
+        self.wf_csecs.pack(side="left", padx=3)
+        self.wf_csecs.insert(0, "30")
+        self.wf_probe = tk.BooleanVar(value=True)
+        tk.Checkbutton(f3, text=self._wl_T("  /  ", "+ probing/nearby"),
+                       variable=self.wf_probe, bg=TH["bg"], fg=TH["text"],
+                       selectcolor=TH["card"], font=TH["font_s"]).pack(side="left", padx=4)
         tk.Label(f3, text="CLIENT:", bg=TH["bg"], fg=TH["text"]).pack(side="left", padx=(10, 0))
         self.wf_client = tk.Entry(f3, bg=TH["card"], fg=TH["text"], width=14,
                                   insertbackground=TH["text"])
@@ -3499,80 +3508,193 @@ class ToolboxApp:
         rc, o = run_cmd(["iw", "dev", iface, "info"], 5)
         return ("type monitor" in o)
 
+    def _wf_bar(self, pwr):
+        n = 6 if pwr >= -50 else 5 if pwr >= -60 else 4 if pwr >= -70 else 3 if pwr >= -80 else 2
+        return "#" * n + "." * (6 - n)
+
+    def _wf_band(self, ch):
+        try:
+            return "5G" if int(ch) > 14 else "2.4"
+        except Exception:
+            return " ? "
+
+    def _wf_enc_icon(self, enc):
+        e = (enc or "").upper()
+        if "WPA3" in e: return "WPA3"
+        if "WPA" in e:  return "WPA2"
+        if "WEP" in e:  return "WEP!"
+        if "OPN" in e or not e: return "OPEN"
+        return "?   "
+
+    def _wf_laa(self, mac):
+        try:
+            return bool(int(mac.replace(":", "")[:2], 16) & 0x02)
+        except Exception:
+            return False
+
+    def _wf_savedir(self):
+        d0 = os.path.expanduser("~/.cache/toolbox_pro")
+        try:
+            os.makedirs(d0, exist_ok=True)
+        except Exception:
+            pass
+        return d0
+
     def _wf_scan(self):
+        iface = self.wf_if.get().strip() + "mon"
+        if not self._wf_ismon(iface):
+            self._write(self.wf_out, "  \u26a0 Not in monitor mode! Press Monitor ON first", True)
+            return
         if not shutil.which("airodump-ng"):
             self._write(self.wf_out, "  airodump-ng not found", True)
             return
-        iface = self.wf_if.get().strip() + "mon"
-        if not self._wf_ismon(iface):
-            self._write(self.wf_out, "  ⚠ " + self._ig_lb("    !  « ON»  ", "Not in monitor mode! Press Monitor ON first"), True)
-            return
-        self._wf_killscan()
         try:
-            os.remove("/tmp/wscan-01.csv")
+            secs = max(10, min(300, int(_digits_en(self.wf_csecs.get()).strip() or 15)))
         except Exception:
-            pass
-        self._write(self.wf_out, "  🔍 " + self._ig_lb("  AP (15 )...", "Powerful AP scan (15s)..."), True)
+            secs = 15
+        self._wf_killscan()
+        self._wf_cstop = False
+        import tempfile as _tf
+        d = _tf.mkdtemp(prefix="tb_ascn_")
+        pre = os.path.join(d, "ascn")
+        seen_before = set(getattr(self, "_wf_apseen", set()))
+        self._write(self.wf_out, " \U0001f4f6 LIVE AP scan (%ds)..." % secs, True)
+
         def _w():
             import subprocess
-            p = subprocess.Popen(["airodump-ng", "--output-format", "csv",
-                                  "--write", "/tmp/wscan", "--ignore-negative-one", iface],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self._wf_scanproc = p
+            errf = os.path.join(d, "airodump.err")
             try:
-                p.wait(15)
+                subprocess.run(["pkill", "-f", "airodump-ng"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(0.5)
             except Exception:
-                p.terminate()
+                pass
+            cmd = ["airodump-ng", "--output-format", "csv", "--write", pre,
+                   "--ignore-negative-one", iface]
+            _ef = open(errf, "wb")
+            pr = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=_ef)
+            _ef.close()
+            self._wf_scanproc = pr
+            csvf = pre + "-01.csv"
+            t0 = time.time()
+            aps = {}
+
+            def parse():
                 try:
-                    p.wait(3)
+                    with open(csvf, errors="ignore") as f:
+                        rows = f.read().split("\n")
                 except Exception:
-                    pass
-            L = ["", "  📶 " + self._ig_lb("AP   (   ):", "APs found (sorted by signal):"), "",
-                 "  BSSID              CH  PWR  ENC    ESSID"]
-            aps = []
-            try:
-                with open("/tmp/wscan-01.csv", errors="ignore") as f:
-                    rows = f.read().split("\n")
+                    return
                 sec = ""
+                now = time.time()
                 for r in rows:
                     if r.startswith("BSSID,"):
                         sec = "AP"; continue
-                    if r.strip() == "":
-                        if sec == "AP":
-                            sec = "ST"
+                    if r.startswith("Station MAC"):
+                        sec = "ST"; continue
+                    if sec != "AP" or r.strip() == "":
                         continue
-                    if sec != "AP":
+                    c = [x.strip() for x in r.split(",")]
+                    if len(c) < 14 or c[0].count(":") != 5:
                         continue
-                    p2 = [x.strip() for x in r.split(",")]
-                    if len(p2) >= 14 and p2[0].count(":") == 5:
+                    m = c[0].upper()
+                    try: pwr = int(c[8])
+                    except Exception: pwr = -100
+                    try: nst = int(c[9])
+                    except Exception: nst = 0
+                    e = aps.get(m)
+                    if e is None:
+                        aps[m] = {"ch": c[3], "pwr": pwr, "nst": nst, "enc": c[5],
+                                  "ess": ",".join(c[13:]).strip(), "first": now}
+                    else:
+                        e["pwr"] = max(e["pwr"], pwr)
+                        e["nst"] = max(e["nst"], nst)
+                        ess2 = ",".join(c[13:]).strip()
+                        if ess2 and "length" not in ess2:
+                            e["ess"] = ess2
+                        if c[3]:
+                            e["ch"] = c[3]
+
+            def render(final=False):
+                now = time.time()
+                el = min(secs, int(now - t0))
+                items = sorted(aps.items(), key=lambda x: x[1]["pwr"], reverse=True)
+                L = ["", " \U0001f4f6 LIVE APs [%ds/%ds]  (%d seen)" % (el, secs, len(items)), "",
+                     "  %s %-17s %4s  %s %4s  %4s %4s  %-4s  %s" % ("N", "BSSID", "PWR", "SIGNAL", "CH", "BAND", "STA", "SEC", "ESSID / VENDOR")]
+                for m, e in items:
+                    nb = "*" if m not in seen_before else " "
+                    ess = e["ess"] if e["ess"] and "length" not in e["ess"] else "<hidden>"
+                    v = self._wf_oui_vendor(m, allow_online=False)
+                    L.append("  %s %-17s %4d  %s %4s  %4s %4d  %-4s  %s%s" % (
+                        nb, m, e["pwr"], self._wf_bar(e["pwr"]), e["ch"],
+                        self._wf_band(e["ch"]), e["nst"], self._wf_enc_icon(e["enc"]),
+                        ess, ("  [" + v + "]") if v else ""))
+                if not items:
+                    L.append("     (none yet - listening...)")
+                if final:
+                    cong = {}
+                    for m, e in aps.items():
                         try:
-                            pwr = int(p2[8])
+                            ci = int(e["ch"])
+                            cong[ci] = cong.get(ci, 0) + 1
                         except Exception:
-                            pwr = -100
-                        ess = p2[13].strip() or "<hidden>"
-                        aps.append((pwr, p2[0].upper(), p2[3], p2[5], ess))
-            except Exception as e:
-                L.append("  parse error: %s" % e)
-            aps.sort(key=lambda x: x[0], reverse=True)
-            seen = set()
-            apmap = {}
-            for pwr, bssid, chn, enc, ess in aps:
-                if bssid in seen:
-                    continue
-                seen.add(bssid)
-                apmap[bssid] = chn
-                L.append("  %-18s %3s %4s  %-6s %s" % (bssid, chn, pwr, enc, ess))
-            self._wf_apmap = apmap
-            L.append("")
-            L.append("  🧮 " + self._ig_lb(" AP: ", "AP count: ") + str(len(seen)))
-            bb = self.wf_bssid.get().strip().upper()
-            chv = apmap.get(bb, "")
-            def _fc(chv=chv):
-                if chv:
-                    self.wf_ch.delete(0, "end")
-                    self.wf_ch.insert(0, chv)
-            self.root.after(0, _fc)
-            self._write_async(self.wf_out, "\n".join(L), clear=True)
+                            pass
+                    if cong:
+                        top = sorted(cong.items(), key=lambda x: x[1])[:3]
+                        L.append("")
+                        L.append("  \U0001f9e0 Smart: least-crowded channels: " +
+                                 ", ".join("CH%d (%d APs)" % (c0, nn) for c0, nn in top))
+                    b24 = sum(1 for e in aps.values() if self._wf_band(e["ch"]) == "2.4")
+                    b5 = sum(1 for e in aps.values() if self._wf_band(e["ch"]) == "5G")
+                    opn = sum(1 for e in aps.values() if "OPN" in e["enc"].upper())
+                    hid = sum(1 for e in aps.values() if not e["ess"] or "length" in e["ess"])
+                    L.append("  \U0001f4ca %d APs: %d on 2.4G, %d on 5G | %d open | %d hidden" % (
+                        len(aps), b24, b5, opn, hid))
+                    L.append("  (* = first time seen | SEC: WPA3/WPA2/WEP!/OPEN)")
+                    self._wf_apseen = seen_before | set(aps.keys())
+                    am = getattr(self, "_wf_apmap", None)
+                    if am is None:
+                        am = self._wf_apmap = {}
+                    for m, e in aps.items():
+                        am[m] = e["ch"]
+                    try:
+                        with open(os.path.join(self._wf_savedir(), "last_wifi_aps.txt"), "w") as f:
+                            f.write("\n".join(L))
+                    except Exception:
+                        pass
+                self._wf_render("\n".join(L))
+
+            while time.time() - t0 < secs:
+                if getattr(self, "_wf_cstop", False):
+                    break
+                time.sleep(2)
+                parse()
+                render()
+            if pr.poll() is None:
+                pr.terminate()
+                try:
+                    pr.wait(3)
+                except Exception:
+                    pass
+            self._wf_scanproc = None
+            parse()
+            if not aps:
+                try:
+                    with open(errf, errors="ignore") as f:
+                        diag = f.read()[-600:]
+                except Exception:
+                    diag = ""
+                render()
+                self._wf_render("\n  \u274c airodump-ng exit=%s | %s" % (
+                    pr.poll(), (diag or "no stderr captured").strip().replace("\n", " ")))
+            else:
+                render(final=True)
+            try:
+                for fn in os.listdir(d):
+                    os.unlink(os.path.join(d, fn))
+                os.rmdir(d)
+            except Exception:
+                pass
         threading.Thread(target=_w, daemon=True).start()
 
     def _wf_deauth(self):
@@ -3648,49 +3770,380 @@ class ToolboxApp:
         except Exception:
             return ""
 
+    def _wf_oui_table(self):
+        t = getattr(self, "_wf_oui_tab", None)
+        if t is None:
+            t = self._wf_oui_tab = {}
+            for p in ("/usr/share/ieee-data/oui.txt", "/var/lib/ieee-data/oui.txt",
+                      "/usr/share/misc/oui.txt", "/usr/share/ieee-oui/oui.txt"):
+                if not os.path.exists(p):
+                    continue
+                try:
+                    with open(p, errors="ignore") as f:
+                        for ln in f:
+                            m2 = re.match(r"^([0-9A-Fa-f]{6})\s+$hex$\s+(.+)$", ln)
+                            if m2:
+                                t[m2.group(1).upper()] = m2.group(2).strip()[:24]
+                    if t:
+                        break
+                except Exception:
+                    pass
+        return t
+
+    def _wf_oui_vendor(self, mac, allow_online=True):
+        oui = mac.upper().replace(":", "")[:6]
+        cache = getattr(self, "_wf_oui_cache", None)
+        if cache is None:
+            cache = self._wf_oui_cache = {}
+        if oui in cache:
+            return cache[oui]
+        val = self._wf_oui_table().get(oui, "")
+        if not val and allow_online:
+            val = self._wf_vendor(mac)
+        cache[oui] = val
+        return val
+
+    def _wf_sig(self, pwr):
+        if pwr >= -50:
+            return "EXCELLENT"
+        if pwr >= -60:
+            return "GOOD     "
+        if pwr >= -70:
+            return "OK       "
+        if pwr >= -80:
+            return "WEAK     "
+        return "V.WEAK   "
+
+    def _clip_root(self):
+        w = getattr(self, "root", None)
+        if w is None or not hasattr(w, "winfo_children"):
+            w = self
+        return w
+
+    def _clip_toast(self, msg):
+        try:
+            r = self._clip_root()
+            tw = tk.Toplevel(r)
+            tw.overrideredirect(True)
+            try:
+                tw.attributes("-topmost", True)
+            except Exception:
+                pass
+            tw.geometry("+%d+%d" % (r.winfo_pointerx() + 14, r.winfo_pointery() + 14))
+            tk.Label(tw, text=msg, bg="#101010", fg="#7CFC7C", padx=8, pady=3).pack()
+            tw.after(900, tw.destroy)
+        except Exception:
+            pass
+
+    def _clip_has(self, t):
+        try:
+            if isinstance(t, tk.Entry):
+                t.index("sel.first")
+                return True
+            return bool(t.get("sel.first", "sel.last"))
+        except Exception:
+            return False
+
+    def _clip_copy(self, t):
+        try:
+            if isinstance(t, tk.Entry):
+                s0 = t.get(t.index("sel.first"), t.index("sel.last"))
+            else:
+                s0 = t.get("sel.first", "sel.last")
+        except Exception:
+            return False
+        if not s0:
+            return False
+        r = self._clip_root()
+        try:
+            r.clipboard_clear()
+            r.clipboard_append(s0)
+        except Exception:
+            pass
+        self._clip_pending = s0
+        self._clip_bar_show(len(s0))
+        return True
+
+    def _clip_bar_show(self, n):
+        try:
+            self._clip_bar_kill()
+            r = self._clip_root()
+            bw = tk.Toplevel(r)
+            bw.overrideredirect(True)
+            try:
+                bw.attributes("-topmost", True)
+            except Exception:
+                pass
+            bw.configure(bg="#101010")
+            fr = tk.Frame(bw, bg="#101010", bd=1, relief="solid")
+            fr.pack()
+            tk.Label(fr, text="Copied %d chars - L-click in a field to paste" % n,
+                     bg="#101010", fg="#7CFC7C", padx=6, pady=3).pack(side="left")
+            tk.Button(fr, text="Cancel (Esc)", command=self._clip_cancel,
+                      bg="#301010", fg="#FF8080", bd=0, padx=6, pady=2).pack(side="left")
+            bw.update_idletasks()
+            x = r.winfo_rootx() + max(0, (r.winfo_width() - bw.winfo_reqwidth()) // 2)
+            y = r.winfo_rooty() + 34
+            bw.geometry("+%d+%d" % (x, y))
+            self._clip_barw = bw
+        except Exception:
+            pass
+
+    def _clip_bar_kill(self):
+        bw = getattr(self, "_clip_barw", None)
+        if bw is not None:
+            try:
+                bw.destroy()
+            except Exception:
+                pass
+        self._clip_barw = None
+
+    def _clip_cancel(self, e=None):
+        self._clip_pending = None
+        self._clip_bar_kill()
+        return "break"
+
+    def _clip_copyall(self, t):
+        if isinstance(t, tk.Entry):
+            t.selection_range(0, "end")
+            self._clip_copy(t)
+            return
+        t.tag_remove("sel", "1.0", "end")
+        t.tag_add("sel", "1.0", "end-1c")
+        self._clip_copy(t)
+
+    def _clip_selall(self, t):
+        if isinstance(t, tk.Entry):
+            t.selection_range(0, "end")
+            return
+        t.tag_remove("sel", "1.0", "end")
+        t.tag_add("sel", "1.0", "end-1c")
+
+    def _clip_selall(self, t):
+        t.tag_remove("sel", "1.0", "end")
+        t.tag_add("sel", "1.0", "end-1c")
+
+    def _clip_paste(self, t, idx=None):
+        s0 = getattr(self, "_clip_pending", None)
+        if not s0:
+            try:
+                s0 = self._clip_root().clipboard_get()
+            except Exception:
+                return False
+        if not s0:
+            return False
+        try:
+            t.insert(idx if idx else "insert", s0)
+        except Exception:
+            return False
+        self._clip_cancel()
+        return True
+
+    def _clip_b1(self, e):
+        w = e.widget
+        pend = getattr(self, "_clip_pending", None)
+        if not pend:
+            return
+        try:
+            editable = str(w.cget("state")) == "normal"
+            idx = ("@%d" % e.x) if isinstance(w, tk.Entry) else ("@%d,%d" % (e.x, e.y))
+        except Exception:
+            return
+        if editable:
+            self._clip_paste(w, idx)
+
+    def _clip_b3(self, e):
+        t = e.widget
+        try:
+            t.mark_set("clip_anchor", "@%d,%d" % (e.x, e.y))
+            t.mark_gravity("clip_anchor", "left")
+            t._clip_moved = False
+        except Exception:
+            pass
+
+    def _clip_b3m(self, e):
+        t = e.widget
+        try:
+            t._clip_moved = True
+            t.tag_remove("sel", "1.0", "end")
+            t.tag_add("sel", "clip_anchor", "@%d,%d" % (e.x, e.y))
+        except Exception:
+            pass
+
+    def _clip_menu_cancel(self, t):
+        try:
+            if isinstance(t, tk.Entry):
+                t.selection_clear()
+            else:
+                t.tag_remove("sel", "1.0", "end")
+        except Exception:
+            pass
+        self._clip_cancel()
+
+    def _clip_b3r(self, e):
+        t = e.widget
+        if getattr(t, "_clip_moved", False):
+            return
+        m = tk.Menu(t, tearoff=0)
+        has = self._clip_has(t)
+        editable = str(t.cget("state")) == "normal"
+        m.add_command(label="Copy  (Ctrl+C)", command=lambda: self._clip_copy(t),
+                      state="normal" if has else "disabled")
+        m.add_command(label="Copy All", command=lambda: self._clip_copyall(t))
+        m.add_command(label="Select All  (Ctrl+A)", command=lambda: self._clip_selall(t))
+        if editable:
+            m.add_command(label="Paste  (Ctrl+V)", command=lambda: self._clip_paste(t))
+        m.add_separator()
+        m.add_command(label="Cancel", command=lambda: self._clip_menu_cancel(t))
+        try:
+            m.tk_popup(e.x_root, e.y_root)
+        finally:
+            m.grab_release()
+
+    def _clip_text(self, t):
+        if getattr(t, "_clip_on", False):
+            return
+        t._clip_on = True
+        t.bind("<Button-1>", self._clip_b1, add="+")
+        t.bind("<Button-3>", self._clip_b3, add="+")
+        t.bind("<B3-Motion>", self._clip_b3m, add="+")
+        t.bind("<ButtonRelease-3>", self._clip_b3r, add="+")
+        t.bind("<Control-c>", lambda e: (self._clip_copy(e.widget), "break")[1])
+        t.bind("<Control-C>", lambda e: (self._clip_copy(e.widget), "break")[1])
+        t.bind("<Control-a>", lambda e: (self._clip_selall(e.widget), "break")[1])
+        t.bind("<Control-A>", lambda e: (self._clip_selall(e.widget), "break")[1])
+        if str(t.cget("state")) == "normal":
+            t.bind("<Control-v>", lambda e: (self._clip_paste(e.widget), "break")[1])
+            t.bind("<Control-V>", lambda e: (self._clip_paste(e.widget), "break")[1])
+
+    def _clip_entry(self, en):
+        if getattr(en, "_clip_on", False):
+            return
+        en._clip_on = True
+
+        def paste(e):
+            try:
+                en.insert("insert", self._clip_root().clipboard_get())
+            except Exception:
+                pass
+            return "break"
+
+        def copy(e):
+            self._clip_copy(en)
+            return "break"
+
+        def selall(e):
+            en.selection_range(0, "end")
+            return "break"
+
+        en.bind("<Button-1>", self._clip_b1, add="+")
+        en.bind("<Button-3>", self._clip_b3r, add="+")
+        en.bind("<Control-v>", paste)
+        en.bind("<Control-V>", paste)
+        en.bind("<Control-c>", copy)
+        en.bind("<Control-C>", copy)
+        en.bind("<Control-a>", selall)
+        en.bind("<Control-A>", selall)
+
+    def _clip_walk(self, w):
+        for c in w.winfo_children():
+            try:
+                if isinstance(c, tk.Text):
+                    self._clip_text(c)
+                elif isinstance(c, tk.Entry):
+                    self._clip_entry(c)
+            except Exception:
+                pass
+            self._clip_walk(c)
+
+    def _clip_boot(self):
+        self._clip_pending = None
+        self._clip_barw = None
+        self._clip_walk(self._clip_root())
+        try:
+            self._clip_root().bind_all("<Escape>", self._clip_cancel, add="+")
+        except Exception:
+            pass
+
+    def _wf_render(self, text):
+        import inspect
+        w = self.wf_out
+
+        def do():
+            try:
+                n = len(inspect.signature(self._write).parameters)
+            except Exception:
+                n = 3
+            try:
+                if n >= 3:
+                    self._write(w, text, True)
+                else:
+                    self._write(w, text)
+            except Exception:
+                pass
+        try:
+            w.after(0, do)
+        except Exception:
+            do()
+
     def _wf_clients(self):
         b = self.wf_bssid.get().strip().upper()
         if not b or b.count(":") != 5:
-            self._write(self.wf_out, "  " + self._ig_lb(" BSSID   ", "Enter BSSID first"), True)
+            self._write(self.wf_out, "  Enter BSSID first", True)
             return
         if not shutil.which("airodump-ng"):
             self._write(self.wf_out, "  airodump-ng not found", True)
             return
         iface = self.wf_if.get().strip() + "mon"
         if not self._wf_ismon(iface):
-            self._write(self.wf_out, "  ⚠ " + self._ig_lb("    !  « ON»  ", "Not in monitor mode! Press Monitor ON first"), True)
+            self._write(self.wf_out, "  \u26a0 Not in monitor mode! Press Monitor ON first", True)
             return
+        try:
+            secs = max(10, min(300, int(_digits_en(self.wf_csecs.get()).strip() or 30)))
+        except Exception:
+            secs = 30
+        show_probe = bool(self.wf_probe.get())
         ch = self.wf_ch.get().strip() or getattr(self, "_wf_apmap", {}).get(b, "")
         self._wf_killscan()
-        try:
-            os.remove("/tmp/cscan-01.csv")
-        except Exception:
-            pass
-        self._write(self.wf_out, " 🔍 " + self._ig_lb(" (20 )...", "Deep client scan (20s)..."), True)
+        self._wf_cstop = False
+        import tempfile as _tf
+        d = _tf.mkdtemp(prefix="tb_cscan_")
+        pre = os.path.join(d, "cscan")
+        seen_before = set(getattr(self, "_wf_clseen", set()))
+        self._write(self.wf_out, " \U0001f50d LIVE client scan of %s (%ds)..." % (b, secs), True)
+        if not ch:
+            self._write(self.wf_out, "  \u26a0 No channel locked (hopping) - fill CH or Scan APs first", True)
+
         def _w():
             import subprocess
-            cmd = ["airodump-ng", "--output-format", "csv", "--write", "/tmp/cscan",
-                   "--ignore-negative-one", "--bssid", b]
+            errf = os.path.join(d, "airodump.err")
+            try:
+                subprocess.run(["pkill", "-f", "airodump-ng"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(0.5)
+            except Exception:
+                pass
+            cmd = ["airodump-ng", "--output-format", "csv", "--write", pre,
+                   "--ignore-negative-one"]
             if ch:
                 cmd += ["-c", str(ch)]
             cmd.append(iface)
-            p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self._wf_scanproc = p
-            try:
-                p.wait(20)
-            except Exception:
-                p.terminate()
-                try:
-                    p.wait(3)
-                except Exception:
-                    pass
-            L = ["", " 📱 " + self._ig_lb(" ", "Clients connected to ") + b, "",
-                 "  STATION MAC           PWR   PKTS  NAME"]
+            _ef = open(errf, "wb")
+            pr = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=_ef)
+            _ef.close()
+            self._wf_scanproc = pr
+            csvf = pre + "-01.csv"
+            t0 = time.time()
             best = {}
-            try:
-                with open("/tmp/cscan-01.csv", errors="ignore") as f:
-                    rows = f.read().split("\n")
+
+            def parse():
+                try:
+                    with open(csvf, errors="ignore") as f:
+                        rows = f.read().split("\n")
+                except Exception:
+                    return
                 sec = ""
+                now = time.time()
                 for r in rows:
                     if r.startswith("Station MAC"):
                         sec = "ST"; continue
@@ -3699,30 +4152,109 @@ class ToolboxApp:
                     if sec != "ST" or r.strip() == "":
                         continue
                     p2 = [x.strip() for x in r.split(",")]
-                    if len(p2) >= 6 and p2[0].count(":") == 5 and p2[5].strip().upper() == b:
-                        try:
-                            pwr = int(p2[3])
-                        except Exception:
-                            pwr = -100
-                        try:
-                            pk = int(p2[4])
-                        except Exception:
-                            pk = 0
-                        m = p2[0].upper()
-                        if m not in best or pk > best[m][0]:
-                            best[m] = (pk, pwr)
-            except Exception as e:
-                L.append("  parse error: %s" % e)
-            cl = sorted(best.items(), key=lambda x: (x[1][0], x[1][1]), reverse=True)
-            for idx2, (mac, (pk, pwr)) in enumerate(cl):
-                name = self._wf_vendor(mac) if idx2 < 10 else ""
-                L.append("  %-21s %5s %6s  %s" % (mac, pwr, pk, name or "-"))
-            if not cl:
-                L.append("  " + self._ig_lb("   -    ", "No clients found - nobody connected?"))
+                    if len(p2) < 6 or p2[0].count(":") != 5:
+                        continue
+                    m = p2[0].upper()
+                    assoc = p2[5].strip().upper() == b
+                    if not assoc and not show_probe:
+                        continue
+                    try: pwr = int(p2[3])
+                    except Exception: pwr = -100
+                    try: pk = int(p2[4])
+                    except Exception: pk = 0
+                    e = best.get(m)
+                    if e is None:
+                        best[m] = {"pk": pk, "pwr": pwr, "first": now, "last": now,
+                                   "assoc": assoc, "pk0": pk}
+                    else:
+                        e["pk"] = max(e["pk"], pk)
+                        e["pwr"] = max(e["pwr"], pwr)
+                        e["last"] = now
+                        e["assoc"] = e["assoc"] or assoc
+
+            def act(rate):
+                if rate < 1:  return "IDLE"
+                if rate < 10: return "LOW"
+                if rate < 60: return "ACT"
+                return "BUSY"
+
+            def render(final=False):
+                now = time.time()
+                el = min(secs, int(now - t0))
+                ai = sorted([(m, e) for m, e in best.items() if e["assoc"]],
+                            key=lambda x: (x[1]["pk"], x[1]["pwr"]), reverse=True)
+                pi = sorted([(m, e) for m, e in best.items() if not e["assoc"]],
+                            key=lambda x: (x[1]["pk"], x[1]["pwr"]), reverse=True)
+                L = ["", " \U0001f4f1 LIVE clients of %s  [%ds/%ds]" % (b, el, secs), "",
+                     "  %s %-17s %4s  %s %5s  %6s  %-4s %4s  %-8s %s" % ("N", "STATION MAC", "PWR", "SIGNAL", "PKTS", "RATE/s", "ACT", "AGE", "MAC-TYPE", "VENDOR")]
+
+                def row(m, e):
+                    nb = "*" if m not in seen_before else " "
+                    span = max(1.0, now - e["first"])
+                    rate = (e["pk"] - e.get("pk0", 0)) / span
+                    age = max(0, int(now - e["last"]))
+                    mt = "rand" if self._wf_laa(m) else "real"
+                    v = self._wf_oui_vendor(m, allow_online=(final and len(ai) < 9))
+                    return "  %s %-17s %4d  %s %5d  %6.1f  %-4s %4s  %-8s %s" % (
+                        nb, m, e["pwr"], self._wf_bar(e["pwr"]), e["pk"], rate,
+                        act(rate), ("%ds" % age), mt, v or "-")
+                for m, e in ai:
+                    L.append(row(m, e))
+                if not ai:
+                    L.append("     (none yet - silent clients appear after traffic/deauth)")
+                if show_probe and pi:
+                    L.append("")
+                    L.append("  \U0001f6f0 Probing / nearby (not associated to this AP):")
+                    for m, e in pi[:15]:
+                        L.append(row(m, e))
+                if final:
+                    self._wf_clseen = seen_before | set(best.keys())
+                    L.append("")
+                    L.append("  \U0001f3c1 Total: %d associated, %d probing" % (len(ai), len(pi)))
+                    L.append("  (* = first time seen | rand = randomized MAC)")
+                    if ai:
+                        tm, te = ai[0]
+                        L.append("  \U0001f9e0 Smart: strongest/most-active client = %s (%ddBm, %d pkts)" % (tm, te["pwr"], te["pk"]))
+                    else:
+                        L.append("  \u26a0 No clients seen. Tips: lock CH, raise Secs, or short deauth test on YOUR OWN AP")
+                    try:
+                        with open(os.path.join(self._wf_savedir(), "last_wifi_clients.txt"), "w") as f:
+                            f.write("\n".join(L))
+                    except Exception:
+                        pass
+                self._wf_render("\n".join(L))
+
+            while time.time() - t0 < secs:
+                if getattr(self, "_wf_cstop", False):
+                    break
+                time.sleep(2)
+                parse()
+                render()
+            if pr.poll() is None:
+                pr.terminate()
+                try:
+                    pr.wait(3)
+                except Exception:
+                    pass
+            self._wf_scanproc = None
+            parse()
+            if not best:
+                try:
+                    with open(errf, errors="ignore") as f:
+                        diag = f.read()[-600:]
+                except Exception:
+                    diag = ""
+                render()
+                self._wf_render("\n  \u274c airodump-ng exit=%s | %s" % (
+                    pr.poll(), (diag or "no stderr captured").strip().replace("\n", " ")))
             else:
-                L.append("")
-                L.append("  💡 " + self._ig_lb("   MAC    CLIENT ", "For targeted attack, put client MAC in CLIENT"))
-            self._write_async(self.wf_out, "\n".join(L), clear=True)
+                render(final=True)
+            try:
+                for fn in os.listdir(d):
+                    os.unlink(os.path.join(d, fn))
+                os.rmdir(d)
+            except Exception:
+                pass
         threading.Thread(target=_w, daemon=True).start()
 
     def _wf_kill(self):
@@ -3734,6 +4266,15 @@ class ToolboxApp:
                 pass
 
     def _wf_stop(self):
+        sp = getattr(self, "_wf_scanproc", None)
+        if sp is not None and sp.poll() is None:
+            try:
+                sp.terminate()
+            except Exception:
+                pass
+            self._wf_cstop = True
+            self._write(self.wf_out, "  🛑 " + self._ig_lb("  ", "Scan stopped"), True)
+            return
         p = getattr(self, "_wf_proc", None)
         if p is not None and p.poll() is None:
             try:
@@ -6147,6 +6688,10 @@ class ToolboxApp:
             pass
         self._play_chime()
         log("GUI started", "INFO")
+        try:
+            self.root.after(250, self._clip_boot)
+        except Exception:
+            pass
         self.root.mainloop()
 
 if __name__ == "__main__":
